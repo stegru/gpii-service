@@ -1,8 +1,10 @@
 # GPII Windows Service
 
-##Command-line arguments:
+A Windows Service that starts the GPII process when the user logs on, restarts it when it stops unexpectedly, and provides the ability to run high-privileged tasks. 
 
-###Install the service:
+## Operation
+
+### Install the service
 ```
 node index.js --mode=install
 
@@ -10,12 +12,27 @@ node index.js --mode=install
     --nodeArgs=ARGS     Arguments for node.
 ```
 
-###Uninstall the service:
+### Uninstall the service:
 ```
 node index.js --mode=uninstall
 ```
 
-###Running the service (invoked by windows):
+### Starting the service
+```
+net start gpii-service
+```
+
+### Running the service (as invoked by windows):
 ```
 node index.js --mode=service
 ```
+
+## Notes
+
+### Windows Service
+
+The work to make it run as a Windows Service is provided by [stegru/node-os-service#GPII-2338](https://github.com/stegru/node-os-service/tree/GPII-2338). This is a fork of [node-os-service](https://github.com/stephenwvickers/node-os-service) to make it detect user logins.
+
+### Connectivity with GPII
+Initial research: [stegru/service-poc](https://github.com/stegru/service-poc/blob/master/README.md)
+
