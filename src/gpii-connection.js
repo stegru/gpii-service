@@ -115,17 +115,8 @@ gpiiConnection.checkConnection = function (socket) {
 
     var pids = windows.getTcpConnectionPids(socket.localPort, socket.remotePort);
 
-    var success = false;
-
-    if (pids && pids.localPid === process.pid && pids.remotePid) {
-        if (pids.remotePid === gpiiConnection.pid) {
-            // Both pids match.
-            success = true;
-        } else {
-            //
-        }
-    }
-
+    var success = pids && (pids.localPid === process.pid) && pids.remotePid
+        && ((pids.remotePid === gpiiConnection.pid) || windows.isParentPid(gpiiConnection.pid, pids.remotePid));
     return success;
 
 };

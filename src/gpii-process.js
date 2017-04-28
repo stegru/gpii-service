@@ -32,7 +32,7 @@ gpiiProcess.pid = null;
 gpiiProcess.startingGPII = false;
 
 // Command to start GPII.
-gpiiProcess.gpiiCommand = "npm start --prefix c:\\src\\gpii\\gpii-app";
+gpiiProcess.gpiiCommand = null;
 
 /**
  * Called when the service has started.
@@ -115,7 +115,7 @@ gpiiProcess.startGPII = function () {
         gpiiConnection.listen().then(function (url) {
             var command = gpiiProcess.gpiiCommand;
             if (!command) {
-                command = "\"" + process.argv[0] + "\" " + path.resolve(__dirname, "../../gpii.js");
+                command = "\"" + process.argv[0] + "\" " + path.resolve(__dirname, "../../gpii-app/main.js");
             }
 
             var options = {
@@ -145,6 +145,7 @@ gpiiProcess.stopGPII = function () {
         process.kill(gpiiProcess.pid);
     }
 };
+
 
 service.on("start", gpiiProcess.serviceStarted);
 service.on("svc-sessionchange", gpiiProcess.sessionChange);

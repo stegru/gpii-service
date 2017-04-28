@@ -18,5 +18,8 @@
     "ref-array": "1.1.2",
     "ref-wchar": "^1.0.2",
     "yargs": "latest"
+  },
+  "devDependencies": {
+    "node-jqunit": "1.1.4"
   }
 }

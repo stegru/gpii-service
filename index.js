@@ -58,11 +58,20 @@ var startModes = {
 
         var programArgs = yargs.argv.programArgs
             ? yargs.argv.programArgs.split(/,+/)
-            : ["--mode=service"];
+            : [];
 
         var nodeArgs = yargs.argv.nodeArgs
             ? yargs.argv.nodeArgs.split(/,+/)
             : null;
+
+        programArgs.push("--mode=service");
+
+        if (yargs.argv.gpii) {
+            programArgs.push("--gpii=" + yargs.argv.gpii);
+        } else {
+            var gpiiPath = getGPIIPath();
+            programArgs.push(gpiiPath);
+        }
 
         console.log("Installing");
 
@@ -106,7 +115,21 @@ if (startFunction) {
     runService();
 }
 
+/**
+ * Start the service.
+ */
 function runService() {
     require("./src/main.js");
+}
+
+/**
+ * Detect where GPII is.
+ */
+function getGPIIPath() {
+    var getEntryJs = function (dir) {
+        var parentPackage = require("../package.json");
+
+    };
+
 }
 

@@ -359,9 +359,22 @@ windows.getParentPid = function (pid) {
  *
  * @param childPid
  * @param parentPid
+ * @param depth
  */
-windows.isParentPid = function (childPid, parentPid) {
+windows.isParentPid = function (childPid, parentPid, depth) {
+    depth = depth || 5;
 
+    var pid = childPid;
+    var found = false;
+    while (pid && depth-- > 0) {
+        pid = windows.getParentPid(pid);
+        if (pid === parentPid) {
+            found = true;
+            break;
+        }
+    }
+
+    return found;
 };
 
 module.exports = windows;
