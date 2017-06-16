@@ -41,7 +41,29 @@ winapi.constants = {
     // CreateToolhelp32Snapshot; https://msdn.microsoft.com/library/ms682489
     TH32CS_SNAPPROCESS: 0x00000002,
 
-    INVALID_HANDLE_VALUE: -1
+    INVALID_HANDLE_VALUE: -1,
+
+    // https://msdn.microsoft.com/library/ms683231
+    STD_INPUT_HANDLE: -10 >>> 0,
+    STD_OUTPUT_HANDLE: -11 >>> 0,
+    STD_ERROR_HANDLE: -12 >>> 0,
+
+    HANDLE_FLAG_INHERIT: 1,
+
+    // https://msdn.microsoft.com/library/aa446632
+    GENERIC_READWRITE: 0xC0000000, // GENERIC_READ | GENERIC_WRITE
+    // https://msdn.microsoft.com/library/aa363858
+    OPEN_EXISTING: 3,
+    // file handle open (from CRT)
+    FOPEN: 0x1,
+
+    // https://msdn.microsoft.com/library/ms687032
+    INFINITE: 0xFFFFFFFF >>> 0,
+    WAIT_OBJECT_0: 0,
+    WAIT_TIMEOUT: 0x102,
+    WAIT_FAILED: 0xFFFFFFFF
+
+
 };
 
 winapi.errorCodes = {
@@ -138,22 +160,28 @@ winapi.PROCESSENTRY32 = new Struct([
 
 
 /**
- * Creates a MIB_TCPTABLE2 struct with a given buffer.
- * https://msdn.microsoft.com/library/bb485772
+ * Creates a struct for use with STARTUPINFO.lpReserved2, which is passed to the child's C runtime in order to use
+ * them as file descriptors.
  *
- * @param data The size of the whole structure, in bytes.
+ *   int number_of_fds
+ *   unsigned char crt_flags[number_of_fds]
+ *   HANDLE os_handle[number_of_fds]
+ * https://github.com/nodejs/node/blob/master/deps/uv/src/win/process-stdio.c#L33
+ *
+ * @param handleCount {Number} The number of handles the structure is to contain.
  * @return {Struct}
  */
-winapi.createMIBTcpTable2 = function (data) {
+winapi.createHandleInheritStruct = function (handleCount) {
 
-    // get dwNumEntries for the row count.
-    var rowCount = data.readUInt32LE(0);
-    var MIB_TCPTABLE2 = new Struct([
-        [t.DWORD, "dwNumEntries"],
-        [arrayType(winapi.MIB_TCPROW2, rowCount), "table"]
-    ]);
+    var HandleStruct = new Struct([
+        ["int", "length"],
+        [arrayType("uchar", handleCount), "flags"],
+        [arrayType(t.HANDLE, handleCount), "handle"]
+    ], {
+        packed: true
+    });
 
-    return new MIB_TCPTABLE2(data);
+    return new HandleStruct();
 };
 
 winapi.kernel32 = ffi.Library("kernel32", {
@@ -186,6 +214,22 @@ winapi.kernel32 = ffi.Library("kernel32", {
     // https://msdn.microsoft.com/library/ms684836
     "Process32Next": [
         t.BOOL, [t.HANDLE, "pointer"]
+    ],
+    // https://msdn.microsoft.com/library/ms683231
+    "GetStdHandle": [
+        t.HANDLE, [ t.DWORD ]
+    ],
+    // https://msdn.microsoft.com/library/aa363858
+    "CreateFileW": [
+        t.HANDLE, [ t.LPTSTR, t.DWORD, t.DWORD, t.LP, t.DWORD, t.DWORD, t.HANDLE ]
+    ],
+    // https://msdn.microsoft.com/library/aa365747
+    "WriteFile": [
+        t.BOOL, [ t.HANDLE, t.LP, t.DWORD, t.LP, t.LP ]
+    ],
+    // https://msdn.microsoft.com/library/ms687032
+    "WaitForSingleObject": [
+        t.DWORD, [ t.HANDLE, t.DWORD ]
     ]
 });
 
@@ -238,19 +282,6 @@ winapi.wtsapi32 = ffi.Library("wtsapi32", {
         t.BOOL, [ t.ULONG, t.LP ]
     ]
 });
-
-/**
- * Checks the return code of win32 functions that return 0 on success, and throws an exception if the return code
- * is non-zero.
- *
- * @param returnCode {Number} The return code of the function.
- * @param msg {String} A message.
- */
-winapi.checkSuccess = function (returnCode, msg) {
-    if (returnCode) {
-        throw winapi.error(msg + " returnCode=" + returnCode);
-    }
-};
 
 /**
  * Returns an error containing the last win32 error code in the message.

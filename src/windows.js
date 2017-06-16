@@ -18,173 +18,13 @@
 "use strict";
 
 var ref = require("ref"),
+    Promise = require("bluebird"),
     logging = require("./logging.js"),
     winapi = require("./winapi.js"),
     path = require("path");
 
 var windows = {
     winapi: winapi
-};
-
-
-function htons(n) {
-    return ((n & 0xff) << 8) | ((n >> 8) & 0xff);
-}
-
-/**
- * Gets the pids of the processes on either side of a connection between the given ports on localhost.
- *
- * @param localPort {Number} The local port.
- * @param remotePort {Number} The remote port.
- * @return {Object} localPid and remotePid of the connection. null if there's no such connection found.
- */
-windows.getTcpConnectionPids = function (localPort, remotePort) {
-
-    var localhost = 0x0100007F;
-    var local = {
-        port: htons(localPort),
-        address: localhost
-    };
-    var remote = {
-        port: htons(remotePort),
-        address: localhost
-    };
-
-    var sizeBuffer = ref.alloc(winapi.types.ULONG);
-
-    // GetTcpTable2 is called first to get the required buffer size.
-    var ret = winapi.iphlpapi.GetTcpTable2(ref.NULL, sizeBuffer, false);
-
-    if (ret !== winapi.errorCodes.ERROR_INSUFFICIENT_BUFFER) {
-        winapi.checkSuccess(ret, "GetTcpTable2");
-        return null;
-    }
-
-    // Add extra space in case the table grew (the chance of this is slim, unless node stops to read this comment).
-    var size = sizeBuffer.deref() + 100;
-    sizeBuffer.writeUInt32LE(size);
-    var tableBuffer = new Buffer(size);
-
-    ret = winapi.iphlpapi.GetTcpTable2(tableBuffer, sizeBuffer, false);
-    winapi.checkSuccess(ret, "GetTcpTable2 #2");
-
-    var table = winapi.createMIBTcpTable2(tableBuffer);
-
-    var rowCount = table.dwNumEntries;
-    var pidsTogo = {
-        localPid: undefined,
-        remotePid: undefined
-    };
-    for (var r = 0; r < rowCount; r++) {
-        var row = table.table[r];
-        if (row.dwState === winapi.constants.MIB_TCP_STATE_ESTAB) {
-
-            // "The upper 16 bits may contain uninitialized data." - MSDN
-            var lp = row.dwLocalPort & 0xFFFF;
-            var rp = row.dwRemotePort & 0xFFFF;
-
-            if ((row.dwLocalAddr === local.address) && (row.dwRemoteAddr === remote.address)
-                && (lp === local.port) && (rp === remote.port)) {
-                // The local end of the connection
-                pidsTogo.localPid = row.dwOwningPid;
-                if (pidsTogo.remotePid) {
-                    break;
-                }
-            } else if ((row.dwLocalAddr === remote.address) && (row.dwRemoteAddr === local.address)
-                && (lp === remote.port) && (rp === local.port)) {
-                // The remote end of the connection
-                pidsTogo.remotePid = row.dwOwningPid;
-                if (pidsTogo.localPid) {
-                    break;
-                }
-            }
-        }
-    }
-
-    return pidsTogo;
-};
-
-/**
- * Executes a command in the context of the console user.
- *
- * https://blogs.msdn.microsoft.com/winsdk/2013/04/30/how-to-launch-a-process-interactively-from-a-windows-service/
- *
- * @param command {String} The command to execute.
- * @param options {Object} [optional] Options
- * @param options.alwaysRun {boolean} true to run as the current user, if the console user token could not be received.
- * @param options.env {object} Additional environment key-value pairs.
- * @param options.currentDir {string} Current directory for the new process.
- *
- * @return {Number} The PID of the new process.
- */
-windows.runAsUser = function (command, options) {
-    options = Object.assign({}, options);
-
-    var userToken = windows.getDesktopUser();
-    if (userToken.error || !userToken) {
-        // In most cases it would fail due to lack of privileges, which implies not running as a service and it should
-        // be ok to invoke this command as the same user. However, the edge case of it failing for some other reason
-        // would cause something to be executed as the LocalSystem account even though that's undesired.
-        if (!options.alwaysRun) {
-            throw new Error("Unable to get the current desktop user (error=" + userToken.error + ")");
-        }
-
-        logging.warn("winapi.runAsUser invoking as current user.");
-        userToken = 0;
-    }
-
-    var pidTogo = null;
-    try {
-
-        // Create an environment block for the user. Without this, the new process will take the environment variables of
-        // this process (causing GPII to use the incorrect data directory).
-        var env = windows.getEnv(userToken);
-        if (options.env) {
-            for (var name in options.env) {
-                if (options.env.hasOwnProperty(name)) {
-                    var value = options.env[name];
-                    env.push(name + "=" + value);
-                }
-            }
-        }
-
-        // Convert the environment block into a C string array.
-        var envString = env.join("\0") + "\0";
-        var envBuf = winapi.stringToWideChar(envString);
-
-        var commandBuf = winapi.stringToWideChar(command);
-        var creationFlags = winapi.constants.CREATE_UNICODE_ENVIRONMENT | winapi.constants.CREATE_NEW_CONSOLE;
-
-        var currentDirectory = options.currentDir
-            ? winapi.stringToWideChar(options.currentDir)
-            : ref.NULL;
-
-        var startupInfo = new winapi.STARTUPINFOEX();
-        startupInfo.ref().fill(0);
-        startupInfo.cb = winapi.STARTUPINFOEX.size;
-        startupInfo.lpDesktop = winapi.stringToWideChar("winsta0\\default");
-
-        var processInfo = new winapi.PROCESS_INFORMATION();
-        processInfo.ref().fill(0);
-
-        var ret = winapi.advapi32.CreateProcessAsUserW(userToken, ref.NULL, commandBuf, ref.NULL, ref.NULL,
-            0, creationFlags, envBuf, currentDirectory, startupInfo.ref(), processInfo.ref());
-
-        winapi.kernel32.CloseHandle(processInfo.hProcess);
-        winapi.kernel32.CloseHandle(processInfo.hThread);
-
-        if (!ret) {
-            throw winapi.error("CreateProcessAsUser");
-        }
-
-        pidTogo = processInfo.dwProcessId;
-    } finally {
-        if (userToken) {
-            winapi.kernel32.CloseHandle(userToken);
-        }
-    }
-
-    return pidTogo;
 };
 
 /**
@@ -194,6 +34,13 @@ windows.runAsUser = function (command, options) {
  */
 windows.isService = function () {
     return require("./service.js").isService;
+};
+
+windows.win32Error = function (message, returnCode, errorCode) {
+    var text = "win32 error: " + message
+        + returnCode === undefined ? "" : (", return:" + returnCode)
+        + ", win32:" + (errorCode || winapi.kernel32.GetLastError());
+    logging.error(text);
 };
 
 /**
@@ -237,6 +84,7 @@ windows.getDesktopUser = function () {
     logging.debug("session id:", sessionId);
 
     var token;
+
     if (sessionId === 0xffffffff) {
         // There isn't a session.
         token = 0;
@@ -375,6 +223,29 @@ windows.isParentPid = function (childPid, parentPid, depth) {
     }
 
     return found;
+};
+
+windows.waitForProcessTermination = function (processHandle, timeout) {
+    return new Promise(function (resolve, reject) {
+        if (!timeout && timeout !== 0) {
+            timeout = winapi.constants.INFINITE;
+        }
+        winapi.kernel32.WaitForSingleObject.async(processHandle, timeout, function (err, ret) {
+            switch (ret) {
+            case winapi.constants.WAIT_OBJECT_0:
+                resolve();
+                break;
+            case winapi.constants.WAIT_TIMEOUT:
+                resolve("timeout");
+                break;
+            case winapi.constants.WAIT_FAILED:
+                throw windows.win32Error("WaitForSingleObject");
+            default:
+                reject();
+                break;
+            }
+        });
+    });
 };
 
 module.exports = windows;

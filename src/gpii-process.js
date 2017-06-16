@@ -20,6 +20,7 @@
 var path = require("path"),
     fs = require("fs"),
     service = require("./service.js"),
+    ipc = require("./gpii-ipc"),
     gpiiConnection = require("./gpii-connection.js"),
     windows = require("./windows.js");
 
@@ -112,7 +113,7 @@ gpiiProcess.startGPII = function () {
     } else {
         gpiiProcess.startingGPII = true;
 
-        gpiiConnection.listen().then(function (url) {
+        gpiiConnection.listen().then(function () {
             var command = gpiiProcess.gpiiCommand;
             if (!command) {
                 command = "\"" + process.argv[0] + "\" " + path.resolve(__dirname, "../../gpii-app/main.js");
@@ -124,15 +125,17 @@ gpiiProcess.startGPII = function () {
                 env: {}
             };
 
-            command = "cmd /k " + command;
-
-            options.env.GPII_SERVICE_URL = url;
             service.log("Starting GPII: " + command);
 
-            gpiiConnection.pid =
-                gpiiProcess.pid = windows.runAsUser(command, options);
+            ipc.startProcess(command, options).then(function (proc) {
+                gpiiProcess.pid = proc.pid;
+                gpiiProcess.pipe = proc.pipe;
+                gpiiProcess.event("started-gpii", gpiiProcess.pid);
+                gpiiProcess.pipe.on("data", function (data) {
+                    service.log("ipc.data", data);
+                });
+            });
 
-            gpiiProcess.event("started-gpii", gpiiProcess.pid);
         }).lastly(function () {
             gpiiProcess.startingGPII = false;
         });
