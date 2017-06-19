@@ -20,8 +20,8 @@
 var path = require("path"),
     fs = require("fs"),
     service = require("./service.js"),
-    ipc = require("./gpii-ipc"),
-    gpiiConnection = require("./gpii-connection.js"),
+    ipc = require("./gpii-pipe"),
+    messaging = require("./pipe-messaging.js"),
     windows = require("./windows.js");
 
 var gpiiProcess = service.module("gpiiProcess");
@@ -104,41 +104,39 @@ gpiiProcess.checkGPII = function () {
  */
 gpiiProcess.startGPII = function () {
 
-    if (gpiiProcess.checkGPII()) {
-        // Another instance of GPII is running.
-        service.log("Another GPII is already running");
-    } else if (gpiiProcess.startingGPII) {
-        // Another instance of GPII is running.
-        service.log(new Error("GPII is already starting"));
-    } else {
+    var running = gpiiProcess.startingGPII || gpiiProcess.messagingSession || gpiiProcess.checkGPII();
+
+    if (!running) {
         gpiiProcess.startingGPII = true;
 
-        gpiiConnection.listen().then(function () {
-            var command = gpiiProcess.gpiiCommand;
-            if (!command) {
-                command = "\"" + process.argv[0] + "\" " + path.resolve(__dirname, "../../gpii-app/main.js");
-            }
+        var command = gpiiProcess.gpiiCommand;
+        if (!command) {
+            command = "\"" + process.argv[0] + "\" " + path.resolve(__dirname, "../../gpii-app/main.js");
+        }
 
-            var options = {
-                // run as the current user if this process isn't a windows service.
-                alwaysRun: !service.isService,
-                env: {}
-            };
+        var options = {
+            // run as the current user if this process isn't a windows service.
+            alwaysRun: !service.isService,
+            env: {}
+        };
 
-            service.log("Starting GPII: " + command);
+        service.log("Starting GPII: " + command);
 
-            ipc.startProcess(command, options).then(function (proc) {
-                gpiiProcess.pid = proc.pid;
-                gpiiProcess.pipe = proc.pipe;
-                gpiiProcess.event("started-gpii", gpiiProcess.pid);
-                gpiiProcess.pipe.on("data", function (data) {
-                    service.log("ipc.data", data);
-                });
-            });
+        ipc.startProcess(command, options).then(function (proc) {
+            gpiiProcess.pid = proc.pid;
+            gpiiProcess.pipe = proc.pipe;
 
-        }).lastly(function () {
-            gpiiProcess.startingGPII = false;
+            windows.waitForProcessTermination(proc.processHandle).then(gpiiProcess.GPIIStopped);
+
+            gpiiProcess.messagingSession = messaging.createSession(proc.pipe, "gpii");
+            gpiiProcess.messagingSession.on("close", gpiiProcess.stopGPII);
+            gpiiProcess.event("started-gpii", gpiiProcess.pid);
+
+            setInterval(function () {
+                gpiiProcess.messagingSession.sendMessage("hello");
+            }, 1000);
         });
+
     }
 };
 
@@ -146,9 +144,13 @@ gpiiProcess.stopGPII = function () {
     if (gpiiProcess.pid) {
         service.log("Stopping GPII");
         process.kill(gpiiProcess.pid);
+        gpiiProcess.pid = null;
     }
 };
 
+gpiiProcess.GPIIStopped = function () {
+    service.log("GPII stopped");
+};
 
 service.on("start", gpiiProcess.serviceStarted);
 service.on("svc-sessionchange", gpiiProcess.sessionChange);

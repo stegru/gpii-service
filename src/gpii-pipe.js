@@ -38,17 +38,16 @@ var ipc = exports;
  */
 ipc.startProcess = function (command, options) {
     options = Object.assign({}, options);
-    return ipc.createPipe().then(function (pipePair) {
+    var pipeName = ipc.generatePipeName();
+
+    return ipc.createPipe(pipeName).then(function (pipePair) {
         options.inheritHandles = [pipePair.clientHandle];
         var processInfo = ipc.execute(command, options);
 
-        windows.waitForProcessTermination(processInfo.handle).then(function () {
-            pipePair.serverConnection.end();
-        });
-
         return {
             pipe: pipePair.serverConnection,
-            pid: processInfo.pid
+            pid: processInfo.pid,
+            processHandle: processInfo.handle
         };
 
     }).caught(function (err) {
@@ -56,6 +55,11 @@ ipc.startProcess = function (command, options) {
     });
 };
 
+/**
+ * Generates a named-pipe name.
+ *
+ * @return {string} The name of the pipe.
+ */
 ipc.generatePipeName = function () {
     var pipeName = "\\\\.\\pipe\\gpii-" + crypto.randomBytes(18).toString("base64").replace("/", "");
     logging.debug("Pipe name:", pipeName);
@@ -63,11 +67,14 @@ ipc.generatePipeName = function () {
 };
 
 /**
- * Opens a named pipe.
+ * Open a named pipe, and connect to it.
+ *
+ * @param pipeName {String} Name of the pipe.
+ * @return {Promise} A promise resolving when the pipe has been connected to, with an object containing both ends to the
+ * pipe.
  */
-ipc.createPipe = function () {
+ipc.createPipe = function (pipeName) {
     return new Promise(function (resolve, reject) {
-        var pipeName = ipc.generatePipeName();
         var pipe = {
             serverConnection: null,
             clientHandle: null
@@ -101,6 +108,12 @@ ipc.createPipe = function () {
     });
 };
 
+/**
+ * Connect to a named pipe, resolving with the win32 handle of the connection.
+ *
+ * @param pipeName {String} Name of the pipe.
+ * @return {Promise} Resolves when the connection is made, with the win32 handle of the pipe.
+ */
 ipc.connectToPipe = function (pipeName) {
     return new Promise(function (resolve) {
         var pipeNameBuf = winapi.stringToWideChar(pipeName);
