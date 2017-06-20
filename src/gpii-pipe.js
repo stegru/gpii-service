@@ -61,7 +61,7 @@ ipc.startProcess = function (command, options) {
  * @return {string} The name of the pipe.
  */
 ipc.generatePipeName = function () {
-    var pipeName = "\\\\.\\pipe\\gpii-" + crypto.randomBytes(18).toString("base64").replace("/", "");
+    var pipeName = "\\\\.\\pipe\\gpii-" + crypto.randomBytes(18).toString("base64").replace(/[\\/]/g, ".");
     logging.debug("Pipe name:", pipeName);
     return pipeName;
 };
@@ -93,7 +93,8 @@ ipc.createPipe = function (pipeName) {
         });
 
         server.on("error", function (err) {
-            logging.log("ipc server error", err);
+            //logging.log("ipc server error", err);
+            reject(err);
         });
 
         server.listen(pipeName, function () {
@@ -103,7 +104,7 @@ ipc.createPipe = function (pipeName) {
                 if (pipe.serverConnection) {
                     resolve(pipe);
                 }
-            }).caught(reject);
+            }, reject);
         });
     });
 };
@@ -115,17 +116,18 @@ ipc.createPipe = function (pipeName) {
  * @return {Promise} Resolves when the connection is made, with the win32 handle of the pipe.
  */
 ipc.connectToPipe = function (pipeName) {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
         var pipeNameBuf = winapi.stringToWideChar(pipeName);
         winapi.kernel32.CreateFileW.async(
             pipeNameBuf, winapi.constants.GENERIC_READWRITE, 0, ref.NULL, winapi.constants.OPEN_EXISTING, 0, 0,
             function (err, pipeHandle) {
                 if (err) {
-                    throw err;
-                } else if (!pipeHandle) {
-                    throw winapi.error("CreateFile");
+                    reject(err);
+                } else if (pipeHandle === winapi.constants.INVALID_HANDLE_VALUE || !pipeHandle) {
+                    reject(winapi.error("CreateFile"));
+                } else {
+                    resolve(pipeHandle);
                 }
-                resolve(pipeHandle);
             });
     });
 };

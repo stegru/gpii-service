@@ -41,7 +41,7 @@ winapi.constants = {
     // CreateToolhelp32Snapshot; https://msdn.microsoft.com/library/ms682489
     TH32CS_SNAPPROCESS: 0x00000002,
 
-    INVALID_HANDLE_VALUE: -1,
+    INVALID_HANDLE_VALUE: 0xFFFFFFFF, // Really (uint)-1
 
     // https://msdn.microsoft.com/library/ms683231
     STD_INPUT_HANDLE: -10 >>> 0,
@@ -58,7 +58,7 @@ winapi.constants = {
     FOPEN: 0x1,
 
     // https://msdn.microsoft.com/library/ms687032
-    INFINITE: 0xFFFFFFFF >>> 0,
+    INFINITE: 0xFFFFFFFF,
     WAIT_OBJECT_0: 0,
     WAIT_TIMEOUT: 0x102,
     WAIT_FAILED: 0xFFFFFFFF
