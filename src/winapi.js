@@ -51,6 +51,7 @@ winapi.constants = {
     HANDLE_FLAG_INHERIT: 1,
 
     // https://msdn.microsoft.com/library/aa446632
+    GENERIC_READ: 0x80000000,
     GENERIC_READWRITE: 0xC0000000, // GENERIC_READ | GENERIC_WRITE
     // https://msdn.microsoft.com/library/aa363858
     OPEN_EXISTING: 3,
@@ -80,7 +81,7 @@ winapi.types = {
     PHANDLE: "void*",
     LP: "void*",
     SIZE_T: "ulong",
-    WORD: "uint",
+    WORD: "uint16",
     DWORD: "ulong",
     LONG: "long",
     ULONG: "ulong",
@@ -175,7 +176,7 @@ winapi.createHandleInheritStruct = function (handleCount) {
 
     var HandleStruct = new Struct([
         ["int", "length"],
-        [arrayType("uchar", handleCount), "flags"],
+        [arrayType("char", handleCount), "flags"],
         [arrayType(t.HANDLE, handleCount), "handle"]
     ], {
         packed: true
@@ -218,6 +219,10 @@ winapi.kernel32 = ffi.Library("kernel32", {
     // https://msdn.microsoft.com/library/ms683231
     "GetStdHandle": [
         t.HANDLE, [ t.DWORD ]
+    ],
+    // https://msdn.microsoft.com/library/ms724935
+    "SetHandleInformation": [
+        t.BOOL, [ t.HANDLE, t.DWORD, t.DWORD ]
     ],
     // https://msdn.microsoft.com/library/aa363858
     "CreateFileW": [

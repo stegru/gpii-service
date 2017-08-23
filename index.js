@@ -18,12 +18,14 @@
 "use strict";
 
 var os_service = require("os-service"),
-    yargs = require("yargs"),
+    parseArgs = require("minimist"),
     fs = require("fs"),
     path = require("path"),
     logging = require("./src/logging.js");
 
-var startMode = yargs.argv.mode;
+var args = parseArgs(process.argv.slice(2));
+
+var startMode = args.mode;
 var isService = startMode === "service";
 var dataDir = path.join(process.env.ProgramData, "GPII");
 
@@ -43,6 +45,7 @@ if (isService) {
 
 logging.logLevel = logging.levels.DEBUG;
 
+
 process.on("uncaughtException", function (err) {
     logging.log(err, (err && err.stack) ? err.stack : err);
 });
@@ -51,26 +54,29 @@ var startModes = {
     /**
      * Install the service. This needs to be ran as Administrator.
      *
-     * @param serviceName {String} [optional] Name of the service (default: "gpii-service").
+     * It reads the following arguments from the command line:
+     *  --gpii COMMAND       The command used to start GPII.
+     *  --programArgs ARGS   Comma separated list of arguments to pass to GPII.
+     *  --nodeArgs ARGS      Comma separated list of arguments to pass to node.
+     *  --serviceName NAME   Name of the Windows Service (default: gpii-service).
+     *
      */
-    install: function (serviceName) {
-        serviceName = serviceName || "gpii-service";
+    install: function () {
 
-        var programArgs = yargs.argv.programArgs
-            ? yargs.argv.programArgs.split(/,+/)
+        var serviceName = args.serviceName || "gpii-service";
+
+        var programArgs = args.programArgs
+            ? args.programArgs.split(/,+/)
             : [];
 
-        var nodeArgs = yargs.argv.nodeArgs
-            ? yargs.argv.nodeArgs.split(/,+/)
+        var nodeArgs = args.nodeArgs
+            ? args.nodeArgs.split(/,+/)
             : null;
 
         programArgs.push("--mode=service");
 
-        if (yargs.argv.gpii) {
-            programArgs.push("--gpii=" + yargs.argv.gpii);
-        } else {
-            var gpiiPath = getGPIIPath();
-            programArgs.push(gpiiPath);
+        if (args.gpii) {
+            programArgs.push("--gpii=" + args.gpii);
         }
 
         console.log("Installing");
@@ -87,10 +93,11 @@ var startModes = {
     /**
      * Removes the service. This needs to be ran as Administrator, and the service should be already stopped.
      *
-     * @param serviceName {String} [optional] Name of the service (default: "gpii-service").
+     * It reads the following arguments from the command line:
+     *  --serviceName NAME   Name of the Windows Service (default: gpii-service).
      */
-    uninstall: function (serviceName) {
-        serviceName = serviceName || "gpii-service";
+    uninstall: function () {
+        var serviceName = args.serviceName || "gpii-service";
 
         console.log("Uninstalling");
         os_service.remove(serviceName, function (error) {
@@ -120,16 +127,5 @@ if (startFunction) {
  */
 function runService() {
     require("./src/main.js");
-}
-
-/**
- * Detect where GPII is.
- */
-function getGPIIPath() {
-    var getEntryJs = function (dir) {
-        var parentPackage = require("../package.json");
-
-    };
-
 }
 

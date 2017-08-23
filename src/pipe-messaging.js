@@ -17,11 +17,7 @@
 
 "use strict";
 
-var service = require("./service.js"),
-    net = require("net"),
-    JsonSocket = require("json-socket"),
-    Promise = require("bluebird"),
-    util = require("util"),
+var util = require("util"),
     EventEmitter = require("events");
 
 var messaging = {};

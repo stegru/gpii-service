@@ -1,4 +1,5 @@
-/*
+/* IPC for GPII.
+ * Starts a process (as another user) with a communications channel.
  *
  * Copyright 2017 Raising the Floor - International
  *
@@ -17,6 +18,21 @@
 
 "use strict";
 
+/*
+How it works:
+- A (randomly) named pipe is created and connected to.
+- The child process is created, with one end of the pipe passed to it (using c-runtime file descriptor inheritance).
+- The child process is then able to use the pipe as it would with any file descriptor.
+- The parent (this process) can trust the client end of the pipe because it opened it itself.
+- See GPII-2399.
+
+The server (this process) end of the pipe is a node IPC socket and is created by node. The client end of the pipe can
+also be a node socket, however due to how the child process is being started (as another user), node's exec/spawn can't
+be used and the file handle for the pipe needs to be known. For this reason, the child-end of the pipe needs to be
+created using the Win32 API. This doesn't affect how the client receives the pipe.
+
+*/
+
 var ref = require("ref"),
     net = require("net"),
     crypto = require("crypto"),
@@ -28,6 +44,7 @@ var winapi = windows.winapi;
 var ipc = exports;
 
 /**
+ * Starts a process as the current desktop user, with an open pipe inherited.
  *
  * @param command {String} The command to execute.
  * @param options {Object} [optional] Options
@@ -40,6 +57,7 @@ ipc.startProcess = function (command, options) {
     options = Object.assign({}, options);
     var pipeName = ipc.generatePipeName();
 
+    // Create the pipe, and pass it to a new process.
     return ipc.createPipe(pipeName).then(function (pipePair) {
         options.inheritHandles = [pipePair.clientHandle];
         var processInfo = ipc.execute(command, options);
@@ -49,9 +67,6 @@ ipc.startProcess = function (command, options) {
             pid: processInfo.pid,
             processHandle: processInfo.handle
         };
-
-    }).caught(function (err) {
-        logging.error(err);
     });
 };
 
@@ -110,7 +125,7 @@ ipc.createPipe = function (pipeName) {
 };
 
 /**
- * Connect to a named pipe, resolving with the win32 handle of the connection.
+ * Connect to a named pipe.
  *
  * @param pipeName {String} Name of the pipe.
  * @return {Promise} Resolves when the connection is made, with the win32 handle of the pipe.
@@ -139,7 +154,8 @@ ipc.connectToPipe = function (pipeName) {
  *
  * @param command {String} The command to execute.
  * @param options {Object} [optional] Options
- * @param options.alwaysRun {boolean} true to run as the current user, if the console user token could not be received.
+ * @param options.alwaysRun {boolean} true to run as the current user (what this process is running as), if the console
+ * user token could not be received. Should only be true if not running as a service.
  * @param options.env {object} Additional environment key-value pairs.
  * @param options.currentDir {string} Current directory for the new process.
  * @param options.inheritHandles {Number[]} An array of win32 file handles for the child to inherit.
@@ -150,10 +166,9 @@ ipc.execute = function (command, options) {
     options = Object.assign({}, options);
 
     var userToken = windows.getDesktopUser();
-    if (userToken.error || !userToken) {
-        // In most cases it would fail due to lack of privileges, which implies not running as a service and it should
-        // be ok to invoke this command as the same user. However, the edge case of it failing for some other reason
-        // would cause something to be executed as the LocalSystem account even though that's undesired.
+    if (!userToken) {
+        // There is no token for this session - perhaps no one is logged on, or is in the lock-screen (screen saver).
+        // Continuing could cause something to be executed as the LocalSystem account, which may be undesired.
         if (!options.alwaysRun) {
             throw new Error("Unable to get the current desktop user (error=" + userToken.error + ")");
         }
@@ -198,6 +213,9 @@ ipc.execute = function (command, options) {
         startupInfo.lpDesktop = winapi.stringToWideChar("winsta0\\default");
 
         if (options.inheritHandles) {
+            var STARTF_USESTDHANDLES = 0x00000100;
+            startupInfo.dwFlags = STARTF_USESTDHANDLES;
+
             // Get the standard handles.
             startupInfo.hStdInput = winapi.kernel32.GetStdHandle(winapi.constants.STD_INPUT_HANDLE);
             startupInfo.hStdOutput = winapi.kernel32.GetStdHandle(winapi.constants.STD_OUTPUT_HANDLE);
@@ -206,25 +224,24 @@ ipc.execute = function (command, options) {
             // Add the handles to the lpReserved2 structure. This is how the CRT passes handles to a child. When the
             // child starts it is able to use the file as a normal file descriptor.
             // Node uses this same technique: https://github.com/nodejs/node/blob/master/deps/uv/src/win/process.c#L1048
-            var allHandles = [ startupInfo.hStdInput, startupInfo.hStdOutput, startupInfo.hStdError ];
+            var allHandles = [startupInfo.hStdInput, startupInfo.hStdOutput, startupInfo.hStdError];
             allHandles.push.apply(allHandles, options.inheritHandles);
 
-            var handles = winapi.createHandleInheritStruct(options.inheritHandles.length);
+            var handles = winapi.createHandleInheritStruct(allHandles.length);
             handles.ref().fill(0);
             handles.length = allHandles.length;
 
-            for (var n = 0; n < allHandles; n++) {
+            for (var n = 0; n < allHandles.length; n++) {
                 handles.flags[n] = winapi.constants.FOPEN;
                 handles.handle[n] = allHandles[n];
                 // Mark the handle as inheritable.
                 winapi.kernel32.SetHandleInformation(
-                    arguments[n], winapi.constants.HANDLE_FLAG_INHERIT, winapi.constants.HANDLE_FLAG_INHERIT);
+                    allHandles[n], winapi.constants.HANDLE_FLAG_INHERIT, winapi.constants.HANDLE_FLAG_INHERIT);
             }
 
+            startupInfo.cbReserved2 = handles["ref.buffer"].byteLength;
             startupInfo.lpReserved2 = handles.ref();
-            startupInfo.cbReserved2 = startupInfo.lpReserved2.byteLength;
         }
-
         var processInfoBuf = new winapi.PROCESS_INFORMATION();
         processInfoBuf.ref().fill(0);
 
@@ -239,7 +256,6 @@ ipc.execute = function (command, options) {
         processInfo.handle = processInfoBuf.hProcess;
 
         winapi.kernel32.CloseHandle(processInfoBuf.hThread);
-
 
     } finally {
         if (userToken) {

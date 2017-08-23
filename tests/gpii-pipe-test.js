@@ -3,7 +3,8 @@
 var jqUnit = require("node-jqunit"),
     net = require("net"),
     path = require("path"),
-    gpiiPipe = require("../src/gpii-pipe.js");
+    gpiiIPC = require("../src/gpii-ipc.js"),
+    winapi = require("../src/winapi.js");
 
 var teardowns = [];
 
@@ -14,17 +15,16 @@ jqUnit.module("GPII pipe tests", {
         }
     }
 });
-/*
+
 // Tests generatePipeName
 jqUnit.test("Test generatePipeName", function () {
     var pipePrefix = "\\\\.\\pipe\\";
-
 
     // Because the names are random, check against a sample of them to avoid lucky results.
     var sampleSize = 300;
     var pipeNames = [];
     for (var n = 0; n < sampleSize; n++) {
-        pipeNames.push(gpiiPipe.generatePipeName());
+        pipeNames.push(gpiiIPC.generatePipeName());
     }
 
     for (var pipeIndex = 0; pipeIndex < sampleSize; pipeIndex++) {
@@ -51,7 +51,7 @@ jqUnit.test("Test generatePipeName", function () {
 jqUnit.asyncTest("Test connectToPipe", function () {
     jqUnit.expect(6);
 
-    var pipeName = gpiiPipe.generatePipeName();
+    var pipeName = gpiiIPC.generatePipeName();
 
     // The invocation order of the callbacks for client or server connection varies.
     var serverConnected = false,
@@ -71,7 +71,7 @@ jqUnit.asyncTest("Test connectToPipe", function () {
     });
 
     server.listen(pipeName, function () {
-        var promise = gpiiPipe.connectToPipe(pipeName);
+        var promise = gpiiIPC.connectToPipe(pipeName);
 
         jqUnit.assertNotNull("connectToPipe must return non-null", promise);
         jqUnit.assertEquals("connectToPipe must return a promise", "function", typeof(promise.then));
@@ -91,9 +91,9 @@ jqUnit.asyncTest("Test connectToPipe failures", function () {
 
     var pipeNames = [
         // A pipe that doesn't exist.
-        gpiiPipe.generatePipeName(),
+        gpiiIPC.generatePipeName(),
         // A pipe with a bad name.
-        gpiiPipe.generatePipeName() + "\\",
+        gpiiIPC.generatePipeName() + "\\",
         // Badly formed name
         "invalid",
         null
@@ -104,7 +104,7 @@ jqUnit.asyncTest("Test connectToPipe failures", function () {
     var testPipes = function (pipeNames) {
         var pipeName = pipeNames.shift();
         console.log("Checking bad pipe name:", pipeName);
-        var promise = gpiiPipe.connectToPipe(pipeName);
+        var promise = gpiiIPC.connectToPipe(pipeName);
         jqUnit.assertNotNull("connectToPipe must return non-null", promise);
         jqUnit.assertEquals("connectToPipe must return a promise", "function", typeof(promise.then));
 
@@ -125,13 +125,11 @@ jqUnit.asyncTest("Test connectToPipe failures", function () {
 });
 
 jqUnit.asyncTest("Test createPipe", function () {
-    var INVALID_HANDLE = -1 >>> 0;
-
     jqUnit.expect(8);
 
-    var pipeName = gpiiPipe.generatePipeName();
+    var pipeName = gpiiIPC.generatePipeName();
 
-    var promise = gpiiPipe.createPipe(pipeName);
+    var promise = gpiiIPC.createPipe(pipeName);
     jqUnit.assertNotNull("createPipe must return non-null", promise);
     jqUnit.assertEquals("createPipe must return a promise", "function", typeof(promise.then));
 
@@ -143,7 +141,8 @@ jqUnit.asyncTest("Test createPipe", function () {
 
         jqUnit.assertTrue("serverConnection should be a Socket", pipePair.serverConnection instanceof net.Socket);
         jqUnit.assertFalse("clientHandle should be a number", isNaN(pipePair.clientHandle));
-        jqUnit.assertNotEquals("clientHandle should be a valid handle", pipePair.clientHandle, INVALID_HANDLE);
+        jqUnit.assertNotEquals("clientHandle should be a valid handle",
+            pipePair.clientHandle, winapi.constants.INVALID_HANDLE_VALUE);
 
         jqUnit.start();
     }, function (err) {
@@ -152,9 +151,9 @@ jqUnit.asyncTest("Test createPipe", function () {
     });
 });
 
-jqUnit.asyncTest("Test createPipe fails", function () {
+jqUnit.asyncTest("Test createPipe failures", function () {
 
-    var existingPipe = gpiiPipe.generatePipeName();
+    var existingPipe = gpiiIPC.generatePipeName();
 
     var pipeNames = [
         // A pipe that exists.
@@ -170,14 +169,13 @@ jqUnit.asyncTest("Test createPipe fails", function () {
         var pipeName = pipeNames.shift();
         console.log("Checking bad pipe name:", pipeName);
 
-        var promise = gpiiPipe.createPipe(pipeName);
+        var promise = gpiiIPC.createPipe(pipeName);
         jqUnit.assertNotNull("createPipe must return non-null", promise);
         jqUnit.assertEquals("createPipe must return a promise", "function", typeof(promise.then));
 
         promise.then(function () {
             jqUnit.fail("createPipe should not have resolved");
         }, function (err) {
-            console.error(err);
             jqUnit.assert("createPipe should reject");
 
             if (pipeNames.length > 0) {
@@ -189,7 +187,7 @@ jqUnit.asyncTest("Test createPipe fails", function () {
     };
 
     // Create a pipe to see what happens if another pipe is created with the same name.
-    gpiiPipe.createPipe(existingPipe).then(function () {
+    gpiiIPC.createPipe(existingPipe).then(function () {
         // run the tests.
         testPipes(Array.from(pipeNames));
     }, function (err) {
@@ -198,8 +196,13 @@ jqUnit.asyncTest("Test createPipe fails", function () {
     });
 
 });
-*/
 
+/**
+ * Read from a pipe, calling callback with all the data when it ends.
+ *
+ * @param pipeName {String} Pipe name.
+ * @param callback {Function(err,data)} What to call.
+ */
 function readPipe(pipeName, callback) {
     var buffer = "";
     var server = net.createServer(function (con) {
@@ -213,7 +216,7 @@ function readPipe(pipeName, callback) {
         con.on("data", function (data) {
             buffer += data;
         });
-        con.on("close", function () {
+        con.on("end", function () {
             callback(null, buffer);
         });
     });
@@ -224,54 +227,119 @@ function readPipe(pipeName, callback) {
     });
 }
 
+// Tests the execution of a child process with gpiiIPC.execute (file handle inheritance is not tested here).
 jqUnit.asyncTest("Test execute", function () {
 
-    // Kill any run-away processes.
-    var runningPids = [];
-    teardowns.push(function() {
-        try {
-            var pid = runningPids.shift();
-            if (pid) {
-                process.kill(pid);
-            }
-        } catch (e) {
-            // Ignored.
+    jqUnit.expect(7);
+
+    var testData = {
+        execOptions: {
+            env: {
+                "GPII_TEST_VALUE1": "value1",
+                "GPII_TEST_VALUE2": "value2"
+            },
+            currentDir: process.env.APPDATA
         }
-    });
+    };
 
-    var script = path.join(__dirname, "gpii-pipe-test-child.js");
-    // re-used:
-    var command,
-        proc;
-
-    // Create a pipe so the child process can talk back.
-    var pipeName = gpiiPipe.generatePipeName();
+    // Create a pipe so the child process can talk back (gpiiIPC.execute doesn't capture the child's stdout).
+    var pipeName = gpiiIPC.generatePipeName();
     readPipe(pipeName, checkReturn);
 
-    command = [ "node", script, pipeName ].join(" ");
+    var options = Object.assign({}, testData.execOptions);
+
+    // Two asserts for each environment value.
+    jqUnit.expect(Object.keys(options.env).length * 2);
+
+    // Start the child process, passing the pipe name.
+    var script = path.join(__dirname, "gpii-pipe-test-child.js");
+    var command = ["node", script, pipeName].join(" ");
     console.log("Executing", command);
-    proc = gpiiPipe.execute(command);
+    var proc = gpiiIPC.execute(command, options);
 
     jqUnit.assertTrue("execute should return something", !!proc);
     jqUnit.assertEquals("execute should return an object", "object", typeof(proc));
     jqUnit.assertEquals("pid should be numeric", "number", typeof(proc.pid));
     jqUnit.assertEquals("handle should be numeric", "number", typeof(proc.handle));
 
-    jqUnit.assertTrue("pid should be set", !!proc.pid);
-    jqUnit.assertTrue("handle should be set", !!proc.handle);
-
     function checkReturn(err, data) {
         if (err) {
             console.error(err);
             jqUnit.fail("The was something wrong with the pipe");
+        } else {
+            var obj;
+
+            try {
+                obj = JSON.parse(data);
+            } catch (e) {
+                console.log("child returned: ", data);
+                throw e;
+            }
+
+            jqUnit.assertTrue("child process should return something", !!obj);
+            if (obj.error) {
+                console.log("Error from child:", obj.error);
+                jqUnit.fail("child process returned an error");
+                return;
+            }
+            jqUnit.assertEquals("'currentDir' should return from child", options.currentDir, obj.currentDir);
+            jqUnit.assertTrue("'env' should return from child", !!obj.env);
+
+            for (var key in options.env) {
+                var value = options.env[key];
+                jqUnit.assertTrue("Environment should contain " + key, key, obj.hasOwnProperty(key));
+                jqUnit.assertEquals("Environment '" + key + "' should be the expected value", value, obj.env[key]);
+            }
+
+            jqUnit.start();
         }
-        console.log("got data", data);
+    }
+});
 
-        jqUnit.start();
-    };
+// Tests startProcess - creates a child process with an inherited open pipe.
+jqUnit.asyncTest("Test startProcess", function () {
+    var script = path.join(__dirname, "gpii-pipe-test-child.js");
+    var command = ["node", script, "inherited-pipe"].join(" ");
+    console.log("Starting", command);
 
-    runningPids.push(proc.pid);
+    var sendData = "FROM PARENT";
+    var expected = [
+        // Test reading, child sends this first.
+        "FROM CHILD\n",
+        // Test writing; child responds with what was sent.
+        "received: " + sendData + "\n"
+    ];
 
+    var expectedIndex = 0;
 
+    var allData = "";
+
+    gpiiIPC.startProcess(command).then(function (p) {
+        p.pipe.setEncoding("utf8");
+        p.pipe.on("data", function (data) {
+            allData += data;
+            if (allData.indexOf("\n") >= 0) {
+                console.log("from pipe:", allData);
+                jqUnit.assertEquals("Expected input from pipe", expected[expectedIndex], allData);
+                allData = "";
+                expectedIndex++;
+                if (expectedIndex >= expected.length) {
+                    p.pipe.end();
+                } else {
+                    p.pipe.write(sendData + "\n");
+                }
+            }
+        });
+
+        p.pipe.on("end", function () {
+            jqUnit.start();
+        });
+
+        p.pipe.on("error", function (err) {
+            console.error("Pipe error:", err);
+            jqUnit.fail("Pipe failed.");
+        });
+
+    }, jqUnit.fail);
 
 });

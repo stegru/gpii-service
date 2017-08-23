@@ -17,7 +17,7 @@
     "ref-struct": "1",
     "ref-array": "1.1.2",
     "ref-wchar": "^1.0.2",
-    "yargs": "latest"
+    "minimist": "1.2.0"
   },
   "devDependencies": {
     "node-jqunit": "1.1.4"

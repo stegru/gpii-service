@@ -20,8 +20,7 @@
 var path = require("path"),
     fs = require("fs"),
     service = require("./service.js"),
-    ipc = require("./gpii-pipe"),
-    messaging = require("./pipe-messaging.js"),
+    ipc = require("./gpii-ipc"),
     windows = require("./windows.js");
 
 var gpiiProcess = service.module("gpiiProcess");
@@ -33,7 +32,10 @@ gpiiProcess.pid = null;
 gpiiProcess.startingGPII = false;
 
 // Command to start GPII.
-gpiiProcess.gpiiCommand = null;
+gpiiProcess.gpiiCommand = service.args.gpii || "c:\\program files (x86)\\GPII\\windows\\gpii-app.exe";
+
+// When GPII was started (process.hrtime).
+gpiiProcess.lastStart = null;
 
 /**
  * Called when the service has started.
@@ -52,20 +54,46 @@ gpiiProcess.sessionChange = function (eventType) {
 
     switch (eventType) {
     case "session-logon":
+        // User just logged on.
         gpiiProcess.startGPII();
         break;
     }
 };
 
 /**
- * Determines if there's an instance of GPII already running, that isn't managed by this service.
+ * Determines if a process identified by the given pid is running.
+ *
+ * @param pid {Number} Process to check
+ * @return {boolean} True if the pid is a running process.
  */
-gpiiProcess.checkGPII = function () {
+gpiiProcess.isProcessRunning = function (pid) {
+    var running = false;
+    if (pid) {
+        try {
+            // Check if it's still running.
+            process.kill(pid, 0);
+            // No error means the process is running.
+            running = true;
+            // TODO: Ensure the process really is GPII, and not just a re-use of the pid.
+        } catch (e) {
+            // Nothing.
+        }
+    }
 
+    return running;
+};
+
+/**
+ * Reads GPII's pid file
+ *
+ * @return {Number} The pid in the file, or null if the file doesn't exist.
+ */
+gpiiProcess.readPidFile = function () {
     var token = windows.getDesktopUser();
     var pidFile;
 
     try {
+        // Get the APPDATA path for the desktop user.
         var dataDir = windows.getUserDataDir(token);
         if (!dataDir) {
             throw new Error("Unable to get the current user's data directory.");
@@ -83,31 +111,36 @@ gpiiProcess.checkGPII = function () {
         // Get the old pid from the lock file
         var content = fs.readFileSync(pidFile, {encoding: "utf8"});
         pid = parseInt(content);
-        // A "0" PID will never be GPII (and process.kill will succeed on Linux).
-        if (pid) {
-            // Check if it's still running.
-            process.kill(pid, 0);
-            // No error means the process is running.
-            // TODO: Ensure the process really is GPII, and not just a re-use of the pid.
-        }
     } catch (e) {
-        // The pid file doesn't exist, or the pid isn't running
+        // The pid file doesn't exist
         pid = null;
     }
 
-    return pid || null;
+    return pid;
+};
+
+/**
+ * Determines if there's an instance of GPII already running, that isn't managed by this service.
+ *
+ * @return The pid of the GPII process, otherwise null.
+ */
+gpiiProcess.checkGPII = function () {
+    var pid = gpiiProcess.readPidFile();
+    return (pid && gpiiProcess.isProcessRunning(pid)) ? pid : null;
 };
 
 /**
  * Starts the GPII process in the context of the logged-in user.
- *
  */
 gpiiProcess.startGPII = function () {
 
-    var running = gpiiProcess.startingGPII || gpiiProcess.messagingSession || gpiiProcess.checkGPII();
+    var running = gpiiProcess.startingGPII || gpiiProcess.checkGPII();
 
-    if (!running) {
+    if (running) {
+        service.logWarn("GPII is already running.");
+    } else {
         gpiiProcess.startingGPII = true;
+        gpiiProcess.lastStart = process.hrtime();
 
         var command = gpiiProcess.gpiiCommand;
         if (!command) {
@@ -115,7 +148,7 @@ gpiiProcess.startGPII = function () {
         }
 
         var options = {
-            // run as the current user if this process isn't a windows service.
+            // If this process isn't a windows service, then run as the current user.
             alwaysRun: !service.isService,
             env: {}
         };
@@ -126,20 +159,24 @@ gpiiProcess.startGPII = function () {
             gpiiProcess.pid = proc.pid;
             gpiiProcess.pipe = proc.pipe;
 
-            windows.waitForProcessTermination(proc.processHandle).then(gpiiProcess.GPIIStopped);
+            windows.waitForProcessTermination(proc.processHandle).then(gpiiProcess.gpiiStopped);
 
-            gpiiProcess.messagingSession = messaging.createSession(proc.pipe, "gpii");
-            gpiiProcess.messagingSession.on("close", gpiiProcess.stopGPII);
+            // Start the comms with GPII
+            // TODO: GPII doesn't have this implemented yet
+            // gpiiProcess.messagingSession = messaging.createSession(proc.pipe, "gpii");
+            // gpiiProcess.messagingSession.on("close", gpiiProcess.stopGPII);
+
             gpiiProcess.event("started-gpii", gpiiProcess.pid);
-
-            setInterval(function () {
-                gpiiProcess.messagingSession.sendMessage("hello");
-            }, 1000);
+            gpiiProcess.startingGPII = false;
+        }, function (err) {
+            service.logError(err);
         });
-
     }
 };
 
+/**
+ * Stops the GPII process.
+ */
 gpiiProcess.stopGPII = function () {
     if (gpiiProcess.pid) {
         service.log("Stopping GPII");
@@ -148,10 +185,45 @@ gpiiProcess.stopGPII = function () {
     }
 };
 
-gpiiProcess.GPIIStopped = function () {
+/**
+ * Called when the GPII process has been stopped.
+ * If it wasn't intentional, then restart it unless it's failed to start a number of consecutive times. A running time
+ * of under 20 seconds is deemed as a failure to start.
+ */
+gpiiProcess.gpiiStopped = function () {
     service.log("GPII stopped");
+
+    // If the pid file wasn't removed, then it died unintentionally.
+    var pid = gpiiProcess.readPidFile();
+    var crashed = (pid && pid === gpiiProcess.pid);
+
+    gpiiProcess.pid = null;
+
+    if (crashed) {
+        var restart = true;
+        // Check if it's failing to start - if it's been running for less than 20 seconds.
+        var timespan = process.hrtime(gpiiProcess.lastStart);
+        var seconds = timespan[0];
+        if (seconds > 20) {
+            gpiiProcess.restartCount = 0;
+        } else {
+            service.logWarn("GPII failed at start.");
+            gpiiProcess.restartCount = (gpiiProcess.restartCount || 0) + 1;
+            if (gpiiProcess.restartCount > 2) {
+                // Crashed at the start too many times.
+                service.logError("Unable to start GPII.");
+                restart = false;
+            }
+        }
+
+        if (restart) {
+            // Throttle the re-start rate, increasing 10 seconds each time.
+            setTimeout(gpiiProcess.startGPII, gpiiProcess.restartCount * 10000 + 1000);
+        }
+    }
 };
 
+// Listen for service start and session change.
 service.on("start", gpiiProcess.serviceStarted);
 service.on("svc-sessionchange", gpiiProcess.sessionChange);
 

@@ -27,13 +27,17 @@ var windows = {
     winapi: winapi
 };
 
+
 /**
  * Determine if this process is running as a service.
  *
  * @return {Boolean} true if running as a service.
  */
 windows.isService = function () {
-    return require("./service.js").isService;
+    // Windows services don't have stdin or out
+    var stdin = winapi.kernel32.GetStdHandle(winapi.constants.STD_INPUT_HANDLE);
+    var stdout = winapi.kernel32.GetStdHandle(winapi.constants.STD_OUTPUT_HANDLE);
+    return stdin === 0 && stdout === 0;
 };
 
 windows.win32Error = function (message, returnCode, errorCode) {
@@ -75,48 +79,51 @@ windows.getOwnUserToken = function () {
  */
 windows.getDesktopUser = function () {
 
-    if (!windows.isService()) {
-        return windows.getOwnUserToken();
-    }
+    var userToken;
 
-    // Get the session ID of the console session.
-    var sessionId = winapi.kernel32.WTSGetActiveConsoleSessionId();
-    logging.debug("session id:", sessionId);
+    if (windows.isService()) {
+        // Get the session ID of the console session.
+        var sessionId = winapi.kernel32.WTSGetActiveConsoleSessionId();
+        logging.debug("session id:", sessionId);
 
-    var token;
 
-    if (sessionId === 0xffffffff) {
-        // There isn't a session.
-        token = 0;
-    } else {
-        // Get the access token of the user logged into the session.
-        var tokenBuf = ref.alloc(winapi.types.HANDLE);
-        var success = winapi.wtsapi32.WTSQueryUserToken(sessionId, tokenBuf);
-
-        if (success) {
-            token = tokenBuf.deref();
+        if (sessionId === 0xffffffff) {
+            // There isn't a session.
+            userToken = 0;
         } else {
-            var errorCode = winapi.kernel32.GetLastError();
-            switch (errorCode) {
-            case winapi.errorCodes.ERROR_NO_TOKEN:
-            case winapi.errorCodes.ERROR_SUCCESS:
-                // There is no user on this session.
-                logging.log("WTSQueryUserToken failed (win32=" + errorCode + ")");
-                token = 0;
-                break;
-            case winapi.errorCodes.ERROR_ACCESS_DENIED:
-            case winapi.errorCodes.ERROR_PRIVILEGE_NOT_HELD:
-                // Not running as a service.
-                token = 0;
-                break;
-            default:
-                throw winapi.error("WTSQueryUserToken", errorCode);
-                break;
+            // Get the access token of the user logged into the session.
+            var tokenBuf = ref.alloc(winapi.types.HANDLE);
+            var success = winapi.wtsapi32.WTSQueryUserToken(sessionId, tokenBuf);
+
+            if (success) {
+                userToken = tokenBuf.deref();
+            } else {
+                var errorCode = winapi.kernel32.GetLastError();
+                logging.warn("WTSQueryUserToken failed (win32=" + errorCode + ")");
+
+                switch (errorCode) {
+                case winapi.errorCodes.ERROR_NO_TOKEN:
+                case winapi.errorCodes.ERROR_SUCCESS:
+                    // There is no user on this session.
+                    userToken = 0;
+                    break;
+                case winapi.errorCodes.ERROR_ACCESS_DENIED:
+                case winapi.errorCodes.ERROR_PRIVILEGE_NOT_HELD:
+                    // Not running as a service?
+                    throw winapi.error("WTSQueryUserToken (isService may be wrong)", errorCode);
+                    break;
+                default:
+                    throw winapi.error("WTSQueryUserToken", errorCode);
+                    break;
+                }
             }
         }
+    } else {
+        // If not running as a service, then assume the current user is the desktop user.
+        userToken = windows.getOwnUserToken();
     }
 
-    return token;
+    return userToken;
 };
 
 /**
@@ -148,13 +155,15 @@ windows.getEnv = function (token) {
 };
 
 /**
- * Gets the GPII data directory for the specified user.
+ * Gets the GPII data directory for the specified user (identified by token).
  *
- * @param token {Number} Token handle for the user.
+ * When running as a service, this process's "APPDATA" value will not point to the current user's.
+ *
+ * @param userToken {Number} Token handle for the user.
  */
-windows.getUserDataDir = function (token) {
+windows.getUserDataDir = function (userToken) {
     // Search the environment block for the APPDATA value. (A better way would be to use SHGetKnownFolderPath)
-    var env = windows.getEnv(token);
+    var env = windows.getEnv(userToken);
     var appData = null;
     for (var n = 0, len = env.length; n < len; n++) {
         var match = env[n].match(/^APPDATA=(.*)/i);

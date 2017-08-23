@@ -19,12 +19,15 @@
 
 var os_service = require("os-service"),
     events = require("events"),
-    logging = require("./logging.js");
+    logging = require("./logging.js"),
+    parseArgs = require("minimist");
 
 var service = new events.EventEmitter();
 
 // true if the process running as a Windows Service.
 service.isService = false;
+
+service.args = parseArgs(process.argv.slice(2));
 
 /**
  * Called when the service has just started.
@@ -33,7 +36,7 @@ service.start = function () {
     service.isService = os_service.getState() !== "stopped";
     // Register the control codes that the service would be interested in.
     os_service.acceptControl(["start", "stop", "shutdown", "sessionchange"], true);
-    // Handle all control codes.
+    // Handle all registered control codes.
     os_service.on("*", service.controlHandler);
     os_service.on("stop", service.stop);
 
@@ -59,7 +62,9 @@ service.logWarn = logging.warn;
 service.logDebug = logging.debug;
 
 /**
- * Called when the service receives a control code.
+ * Called when the service receives a control code. This is what's used to detect a shutdown, service stop, or Windows
+ * user log-in/out.
+ *
  * See https://msdn.microsoft.com/library/ms683241
  *
  * @param controlName Name of the control code.
